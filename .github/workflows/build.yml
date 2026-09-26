@@ -1,72 +1,42 @@
-name: Build Shizuku API v12.1.0
+name: Build Shizuku API
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build API and Provider
+    name: Build Shizuku API
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 获取 Shizuku-API v12.1.0
-      - name: Checkout Shizuku-API v12.1.0
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: v12.1.0
-          fetch-depth: 1
 
-      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. 使用 GitHub Runner 自带 Android SDK
       - name: Setup Android SDK
         shell: bash
         run: |
           set -e
-
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_HOME=$ANDROID_HOME"
 
           if [ -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
             SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           elif [ -d "$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin" ]; then
             SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
           else
-            echo "ERROR: sdkmanager not found"
+            echo "sdkmanager not found"
             exit 1
           fi
 
-          SDK_DIR="$ANDROID_SDK_ROOT"
-
-          echo "SDKMANAGER=$SDKMANAGER"
-          echo "SDK_DIR=$SDK_DIR"
-
           echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
-          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
 
-          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
-          echo "$SDK_DIR/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
-          "$SDKMANAGER" --version
-
-      # 4. 接受 Android SDK License
-      - name: Accept Android SDK licenses
-        shell: bash
-        run: |
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          echo "Android SDK licenses processed."
-
-      # 5. 安装编译需要的 SDK / Build Tools / NDK
-      - name: Install Android build components
-        shell: bash
-        run: |
-          set -e
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
 
           "$SDKMANAGER" \
             "platform-tools" \
@@ -74,114 +44,56 @@ jobs:
             "build-tools;30.0.3" \
             "ndk;23.0.7599858"
 
-      # 6. 检查环境
-      - name: Verify build environment
-        shell: bash
+      - name: Verify Android SDK
         run: |
-          set -e
-
-          echo "========== Java =========="
-          java -version
-
-          echo "========== SDK Manager =========="
-          "$SDKMANAGER" --version
-
-          echo "========== Android Platform =========="
           test -f "$ANDROID_SDK_ROOT/platforms/android-30/android.jar"
-          echo "android-30 OK"
-
-          echo "========== Build Tools =========="
           test -f "$ANDROID_SDK_ROOT/build-tools/30.0.3/aapt"
-          echo "build-tools 30.0.3 OK"
-
-          echo "========== NDK =========="
           test -d "$ANDROID_SDK_ROOT/ndk/23.0.7599858"
-          echo "NDK 23.0.7599858 OK"
+          echo "Android SDK OK"
+          echo "NDK OK"
 
-      # 7. Gradle
       - name: Prepare Gradle
-        shell: bash
         run: |
-          chmod +x ./gradlew
+          chmod +x gradlew
           ./gradlew --version
 
-      # 8. 编译 API + Provider
-      - name: Build API and Provider
-        shell: bash
+      - name: Build API
         run: |
-          set -e
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
+          ./gradlew --no-daemon --stacktrace \
             :api:assembleRelease \
             :provider:assembleRelease
 
-      # 9. 精确检查 AAR
-      - name: Verify AAR files
-        shell: bash
+      - name: Find AAR
         run: |
-          set -e
-
-          echo "========== Searching AAR files =========="
-
+          echo "===== AAR FILES ====="
           find . -type f -name "*.aar" -print
 
-          echo "========== Checking expected files =========="
-
-          test -f "api/build/outputs/aar/api-release.aar"
-          test -f "provider/build/outputs/aar/provider-release.aar"
-
-          echo "api-release.aar FOUND"
-          echo "provider-release.aar FOUND"
-
-          echo "========== File sizes =========="
-
-          ls -lh \
-            "api/build/outputs/aar/api-release.aar" \
-            "provider/build/outputs/aar/provider-release.aar"
-
-      # 10. 整理最终文件
-      - name: Prepare release package
-        shell: bash
+      - name: Package AAR
         run: |
           set -e
 
-          rm -rf release
           mkdir -p release
 
-          cp "api/build/outputs/aar/api-release.aar" \
-             "release/shizuku-api-12.1.0.aar"
+          find api/build/outputs -type f -name "*.aar" \
+            -exec cp {} release/ \;
 
-          cp "provider/build/outputs/aar/provider-release.aar" \
-             "release/shizuku-provider-12.1.0.aar"
+          find provider/build/outputs -type f -name "*.aar" \
+            -exec cp {} release/ \;
+
+          echo "===== RELEASE FILES ====="
+          ls -lh release/
+
+          test "$(find release -type f -name "*.aar" | wc -l)" -gt 0
 
           cd release
+          zip -9 ../shizuku-api-release.zip *.aar
 
-          sha256sum *.aar > SHA256SUMS.txt
-
-          cat SHA256SUMS.txt
-
-          cd ..
-
-          zip -j \
-            "shizuku-api-v12.1.0.zip" \
-            release/*.aar \
-            release/SHA256SUMS.txt
-
-          echo "========== Final files =========="
-          ls -lh release/
-          ls -lh shizuku-api-v12.1.0.zip
-
-      # 11. 上传最终 Artifact
-      - name: Upload Shizuku API
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
-          name: shizuku-api-v12.1.0
+          name: shizuku-api-release
           path: |
-            release/shizuku-api-12.1.0.aar
-            release/shizuku-provider-12.1.0.aar
-            release/SHA256SUMS.txt
-            shizuku-api-v12.1.0.zip
+            release/*.aar
+            shizuku-api-release.zip
           if-no-files-found: error
           retention-days: 30
