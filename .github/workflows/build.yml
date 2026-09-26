@@ -19,15 +19,37 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12266719
+          accept-android-sdk-licenses: false
 
-      - name: Install SDK
+      - name: Accept Android SDK licenses
         run: |
-          sdkmanager "platforms;android-30" "build-tools;30.0.3"
+          yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-30"
+          sdkmanager "build-tools;30.0.3"
+
+      - name: Install NDK
+        run: |
           sdkmanager "ndk;23.0.7599858"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/23.0.7599858" >> $GITHUB_ENV
+          echo "ANDROID_NDK_VERSION=23.0.7599858" >> $GITHUB_ENV
 
-      - name: Build
+      - name: Check environment
         run: |
-          chmod +x gradlew
+          java -version
+          sdkmanager --version
+          ls -la "$ANDROID_SDK_ROOT/ndk/23.0.7599858"
+
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
+      - name: Build Shizuku API
+        run: |
           ./gradlew --no-daemon :api:assembleRelease :provider:assembleRelease
 
       - name: Upload AAR
@@ -37,3 +59,4 @@ jobs:
           path: |
             api/build/outputs/**/*.aar
             provider/build/outputs/**/*.aar
+          if-no-files-found: error
