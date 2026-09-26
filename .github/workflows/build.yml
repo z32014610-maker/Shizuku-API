@@ -3,32 +3,49 @@ name: Build Shizuku API
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Shizuku API
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+
+      # ============================================================
+      # 1. 获取源码
+      # ============================================================
+      - name: Checkout source
         uses: actions/checkout@v4
 
+      # ============================================================
+      # 2. Java 17
+      # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
+      # ============================================================
+      # 3. 准备 Android SDK
+      # ============================================================
       - name: Setup Android SDK
         shell: bash
         run: |
           set -e
 
-          if [ -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          if [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
             SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          elif [ -d "$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin" ]; then
+          elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager" ]; then
             SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/16.0/bin/sdkmanager"
           else
-            echo "sdkmanager not found"
+            echo "ERROR: sdkmanager not found"
+            find "$ANDROID_SDK_ROOT/cmdline-tools" -maxdepth 3 -type f -name sdkmanager -print || true
             exit 1
           fi
 
@@ -36,7 +53,10 @@ jobs:
 
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
+          echo "Accepting Android SDK licenses..."
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          echo "Installing required Android packages..."
 
           "$SDKMANAGER" \
             "platform-tools" \
@@ -44,56 +64,248 @@ jobs:
             "build-tools;30.0.3" \
             "ndk;23.0.7599858"
 
-      - name: Verify Android SDK
-        run: |
-          test -f "$ANDROID_SDK_ROOT/platforms/android-30/android.jar"
-          test -f "$ANDROID_SDK_ROOT/build-tools/30.0.3/aapt"
-          test -d "$ANDROID_SDK_ROOT/ndk/23.0.7599858"
-          echo "Android SDK OK"
-          echo "NDK OK"
-
-      - name: Prepare Gradle
-        run: |
-          chmod +x gradlew
-          ./gradlew --version
-
-      - name: Build API
-        run: |
-          ./gradlew --no-daemon --stacktrace \
-            :api:assembleRelease \
-            :provider:assembleRelease
-
-      - name: Find AAR
-        run: |
-          echo "===== AAR FILES ====="
-          find . -type f -name "*.aar" -print
-
-      - name: Package AAR
+      # ============================================================
+      # 4. 检查 Android 环境
+      # ============================================================
+      - name: Verify Android environment
+        shell: bash
         run: |
           set -e
 
+          echo "=========================================="
+          echo "ANDROID ENVIRONMENT"
+          echo "=========================================="
+
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "SDKMANAGER=$SDKMANAGER"
+
+          echo
+          echo "Java:"
+          java -version
+
+          echo
+          echo "Gradle:"
+          chmod +x gradlew
+          ./gradlew --version
+
+          echo
+          echo "Android platform:"
+          test -f "$ANDROID_SDK_ROOT/platforms/android-30/android.jar"
+          echo "android-30 OK"
+
+          echo
+          echo "Build tools:"
+          test -f "$ANDROID_SDK_ROOT/build-tools/30.0.3/aapt"
+          echo "build-tools 30.0.3 OK"
+
+          echo
+          echo "NDK:"
+          test -d "$ANDROID_SDK_ROOT/ndk/23.0.7599858"
+          echo "NDK 23.0.7599858 OK"
+
+          echo
+          echo "=========================================="
+          echo "ANDROID ENVIRONMENT OK"
+          echo "=========================================="
+
+      # ============================================================
+      # 5. 清理旧构建
+      # ============================================================
+      - name: Clean project
+        shell: bash
+        run: |
+          set -e
+          chmod +x gradlew
+
+          ./gradlew --no-daemon clean
+
+      # ============================================================
+      # 6. 编译 Shizuku API
+      # ============================================================
+      - name: Build API and Provider
+        shell: bash
+        run: |
+          set -e
+          chmod +x gradlew
+
+          echo "=========================================="
+          echo "BUILDING SHIZUKU API"
+          echo "=========================================="
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            :api:assembleRelease \
+            :provider:assembleRelease
+
+          echo
+          echo "=========================================="
+          echo "GRADLE BUILD SUCCESS"
+          echo "=========================================="
+
+      # ============================================================
+      # 7. 确认 AAR
+      # ============================================================
+      - name: Verify AAR files
+        shell: bash
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "SEARCHING FOR AAR FILES"
+          echo "=========================================="
+
+          find . -type f -name "*.aar" -print
+
+          echo
+          echo "Checking required files..."
+
+          test -f api/build/outputs/aar/api-release.aar
+          test -f provider/build/outputs/aar/provider-release.aar
+
+          echo
+          echo "Required AAR files found:"
+          ls -lh \
+            api/build/outputs/aar/api-release.aar \
+            provider/build/outputs/aar/provider-release.aar
+
+          echo
+          echo "AAR verification OK."
+
+      # ============================================================
+      # 8. 打包
+      # ============================================================
+      - name: Package release
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf release
           mkdir -p release
 
-          find api/build/outputs -type f -name "*.aar" \
-            -exec cp {} release/ \;
+          cp \
+            api/build/outputs/aar/api-release.aar \
+            release/
 
-          find provider/build/outputs -type f -name "*.aar" \
-            -exec cp {} release/ \;
-
-          echo "===== RELEASE FILES ====="
-          ls -lh release/
-
-          test "$(find release -type f -name "*.aar" | wc -l)" -gt 0
+          cp \
+            provider/build/outputs/aar/provider-release.aar \
+            release/
 
           cd release
-          zip -9 ../shizuku-api-release.zip *.aar
 
-      - name: Upload AAR
+          zip -9 ../shizuku-api-release.zip \
+            api-release.aar \
+            provider-release.aar
+
+          cd ..
+
+          echo "=========================================="
+          echo "RELEASE FILES"
+          echo "=========================================="
+
+          ls -lh release/
+          ls -lh shizuku-api-release.zip
+
+          test -s release/api-release.aar
+          test -s release/provider-release.aar
+          test -s shizuku-api-release.zip
+
+      # ============================================================
+      # 9. SHA-256
+      # ============================================================
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -e
+
+          cd release
+
+          sha256sum \
+            api-release.aar \
+            provider-release.aar \
+            > SHA256SUMS.txt
+
+          cd ..
+
+          echo "=========================================="
+          echo "SHA-256"
+          echo "=========================================="
+
+          cat release/SHA256SUMS.txt
+
+      # ============================================================
+      # 10. 生成 GitHub Actions Summary
+      # ============================================================
+      - name: Generate build summary
+        shell: bash
+        run: |
+          set -e
+
+          {
+            echo "# Shizuku API Build"
+            echo
+            echo "## Build status"
+            echo
+            echo "✅ Build completed successfully."
+            echo
+            echo "## AAR files"
+            echo
+            echo "| File | Size |"
+            echo "|---|---:|"
+            echo "| api-release.aar | $(du -h release/api-release.aar | cut -f1) |"
+            echo "| provider-release.aar | $(du -h release/provider-release.aar | cut -f1) |"
+            echo
+            echo "## Package"
+            echo
+            echo "| File | Size |"
+            echo "|---|---:|"
+            echo "| shizuku-api-release.zip | $(du -h shizuku-api-release.zip | cut -f1) |"
+            echo
+            echo "## SHA-256"
+            echo
+            echo '```text'
+            cat release/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ============================================================
+      # 11. 上传最终 Artifact
+      # ============================================================
+      - name: Upload Shizuku API release
         uses: actions/upload-artifact@v4
         with:
           name: shizuku-api-release
           path: |
-            release/*.aar
+            release/api-release.aar
+            release/provider-release.aar
+            release/SHA256SUMS.txt
             shizuku-api-release.zip
           if-no-files-found: error
           retention-days: 30
+          compression-level: 9
+
+      # ============================================================
+      # 12. 最终确认
+      # ============================================================
+      - name: Final verification
+        shell: bash
+        run: |
+          set -e
+
+          echo
+          echo "================================================"
+          echo "           SHIZUKU API BUILD COMPLETE"
+          echo "================================================"
+          echo
+          echo "AAR:"
+          ls -lh release/*.aar
+          echo
+          echo "ZIP:"
+          ls -lh shizuku-api-release.zip
+          echo
+          echo "CHECKSUM:"
+          cat release/SHA256SUMS.txt
+          echo
+          echo "================================================"
+          echo "             ALL FILES READY"
+          echo "================================================"
